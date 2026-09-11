@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 import sys
 import time
@@ -118,6 +119,28 @@ def _numeric_matrix(path: Path, sheet_name: str) -> tuple[pd.DatetimeIndex, list
     return dates, [str(x) for x in raw.columns[1:]], values
 
 
+def _time_start_minutes(value) -> int:
+    """把附件列名解释为时段起点；末列 0:00+1 为次日 0:00。"""
+    text = str(value).strip()
+    if "+1" in text:
+        return 1440
+    match = re.search(r"(\d{1,2}):(\d{2})", text)
+    if not match:
+        raise ValueError(f"无法识别时间标签：{value}")
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def _issue_index(time_labels: list[str], hour: int) -> int:
+    """返回整点开始的首个未执行时段；6:00 对应 6:00-6:10，而不是 6:10-6:20。"""
+    if hour == 0:
+        return 0
+    target = hour * 60
+    matches = [i for i, label in enumerate(time_labels) if _time_start_minutes(label) == target]
+    if len(matches) != 1:
+        raise ValueError(f"时间轴中无法唯一定位 {hour}:00：{matches}")
+    return matches[0]
+
+
 def load_inputs(params: Parameters) -> InputData:
     """数据输入：核对四个附件，统一把 kW 转成 kWh。"""
     dates, labels, load_kw = _numeric_matrix(DATA_DIR / "附件2.xlsx", "小区负载")
@@ -127,6 +150,8 @@ def load_inputs(params: Parameters) -> InputData:
         raise ValueError("附件2与附件4日期键不一致")
     if labels != labels_pv or labels != labels_price:
         raise ValueError("附件2与附件4的 144 个时刻键不一致")
+    if [_time_start_minutes(x) for x in labels] != list(range(10, 1450, 10)):
+        raise ValueError("附件2/4时间必须依次表示 00:10-00:20 至次日 00:00-00:10")
 
     fixed = pd.read_excel(DATA_DIR / "附件1.xlsx", sheet_name=0)
     expected = ["时间", "电价", "小区负载", "光伏发电预测功率"]
@@ -208,16 +233,16 @@ def forecast_load_median(data: InputData, day_i: int, p: Parameters, issue_t: in
 
 def official_pv_forecast(data: InputData, day_i: int, issue_t: int) -> np.ndarray:
     """把最近一次官方整点预报线性插值到 10 分钟，并用当前实测误差做因果偏差校正。"""
-    issue_hour = issue_t / 6.0
+    issue_hour = 0.0 if issue_t == 0 else _time_start_minutes(data.time_labels[issue_t]) / 60.0
     release_hour = int(issue_hour // 6) * 6
     release_index = min(release_hour // 6, 3)
     hourly_kw = data.official_pv_kw[day_i, release_index]
-    release_t = release_hour * 6
+    release_t = _issue_index(data.time_labels, release_hour)
     anchor_kw = 0.0 if release_t == 0 else data.pv_kwh[day_i, release_t - 1] / (1.0 / 6.0)
     point_hours = np.arange(25, dtype=float)
     point_values = np.r_[anchor_kw, hourly_kw]
-    end_hours = (np.arange(144) + 1) / 6.0 - release_hour
-    predicted_kw = np.interp(end_hours, point_hours, point_values)
+    start_hours = np.array([_time_start_minutes(x) for x in data.time_labels], dtype=float) / 60.0
+    predicted_kw = np.interp(start_hours - release_hour, point_hours, point_values)
 
     if issue_t > release_t:
         observed_kw = data.pv_kwh[day_i, issue_t - 1] / (1.0 / 6.0)
@@ -438,7 +463,7 @@ def solve_rolling(
     strategy = base_name + strategy_suffix
     rows: list[pd.DataFrame] = []
     soc = p.soc_initial_kwh
-    issue_ts = tuple(h * 6 for h in issue_hours)
+    issue_ts = tuple(_issue_index(data.time_labels, h) for h in issue_hours)
     if issue_ts[0] != 0 or tuple(sorted(set(issue_ts))) != issue_ts:
         raise ValueError("issue_hours 必须从 0 开始且严格递增")
 
@@ -545,7 +570,7 @@ def interval_label(t: int) -> str:
         day = minutes // 1440
         minute = minutes % 1440
         return f"{minute // 60}:{minute % 60:02d}" + ("+1" if day else "")
-    return f"{fmt(t * 10)}-{fmt((t + 1) * 10)}"
+    return f"{fmt((t + 1) * 10)}-{fmt((t + 2) * 10)}"
 
 
 def emergency_groups(day_frame: pd.DataFrame, tol: float = 1e-6) -> list[tuple[str, float]]:
@@ -576,7 +601,8 @@ def write_template(frame: pd.DataFrame, template_name: str, output_name: str, ad
     output_path = RESULTS_DIR / output_name
     shutil.copy2(TEMPLATE_DIR / template_name, output_path)
     wb = load_workbook(output_path)
-    output = frame[frame["日期"] >= pd.Timestamp("2025-02-01")].copy()
+    all_rows = frame.copy()
+    output = all_rows[all_rows["日期"] >= pd.Timestamp("2025-02-01")].copy()
     dates = sorted(output["日期"].unique())
 
     def write_purchase(sheet_name: str, value_col: str, cost_mode: str) -> None:
@@ -604,11 +630,28 @@ def write_template(frame: pd.DataFrame, template_name: str, output_name: str, ad
     row = 2
     for date in dates:
         day = output[output["日期"] == date].sort_values("时段序号")
-        day_start = float(day["期初SOC_kWh"].iloc[0])
-        day_end = float(day["期末SOC_kWh"].iloc[-1])
+        previous_day = all_rows[all_rows["日期"] == pd.Timestamp(date) - pd.Timedelta(days=1)].sort_values("时段序号")
+        previous_midnight = previous_day[
+            previous_day["时间标签"].map(_time_start_minutes) == 1440
+        ]
+        current_midnight = day[day["时间标签"].map(_time_start_minutes) == 1440]
+        if len(previous_midnight) != 1 or len(current_midnight) != 1:
+            raise ValueError(f"{pd.Timestamp(date).date()} 无法定位自然日 0:00/24:00 的 SOC")
+        day_start = float(previous_midnight["期初SOC_kWh"].iloc[0])
+        day_end = float(current_midnight["期初SOC_kWh"].iloc[0])
         for block in range(6):
             _apply_row_style(ws, storage_row_style, row)
-            segment = day.iloc[block * 24:(block + 1) * 24]
+            clock_minutes = day["时间标签"].map(_time_start_minutes) % 1440
+            if block == 0:
+                # 当前日期 0:00-0:10 位于附件上一日期的末列；其余 23 段来自当前日期。
+                segment = pd.concat([
+                    previous_midnight,
+                    day[(clock_minutes >= 10) & (clock_minutes < 240)],
+                ])
+            else:
+                segment = day[(clock_minutes >= block * 240) & (clock_minutes < (block + 1) * 240)]
+            if len(segment) != 24:
+                raise ValueError(f"{pd.Timestamp(date).date()} 的 {4*block}:00-{4*(block+1)}:00 不是24个时段")
             ws.cell(row, 1, pd.Timestamp(date).to_pydatetime() if block == 0 else None)
             ws.cell(row, 2, f"{4 * block}:00-{4 * (block + 1)}:00")
             ws.cell(row, 3, round(float(segment["充电量_kWh"].sum()), 6))
@@ -705,7 +748,7 @@ def make_figures(all_frame: pd.DataFrame, daily: pd.DataFrame, voi_daily: pd.Dat
     example_date = pd.Timestamp("2025-09-23")
     example = all_frame[(all_frame["策略"] == "问题4-3_波动价") & (all_frame["日期"] == example_date)].sort_values("时段序号")
     if len(example) == 144:
-        x = np.arange(144) / 6.0
+        x = np.array([_time_start_minutes(v) for v in example["时间标签"]], dtype=float) / 60.0
         fig, axes = plt.subplots(3, 1, figsize=(9.0, 7.5), sharex=True)
         axes[0].plot(x, example["电价_元每kWh"], label="波动电价", color=colors[2])
         axes[0].set(title="典型日价格", ylabel="元/kWh"); axes[0].legend()
@@ -776,10 +819,15 @@ def write_notes(p: Parameters, summaries: pd.DataFrame, checks: dict, voi_value:
         lines.append(f"- {name}：最大供需残差 {item['最大供需平衡残差_kWh']:.3e} kWh，最大 SOC 残差 {item['最大SOC递推残差_kWh']:.3e} kWh，同时充放电 {item['同时充放电时段数']} 个时段。")
     if voi_value is not None:
         conclusion = "具有正的毛价值" if voi_value > 0 else "未显示正的毛价值"
+        decision = (
+            "只有当新增预报、通信与调整系统的全年总成本低于该正毛价值时，才建议增加相应时点。"
+            if voi_value > 0
+            else "由于毛信息价值为负，即使暂不计新增系统成本，也不建议按当前代理方案增加这些时点。"
+        )
         lines += [
             "", "## 是否增加预报时点", "",
             f"在3/9/15/21点利用最新实测偏差更新既有官方预报的八时点代理方案，相对四时点方案的毛信息价值为 {voi_value:.2f} 元，{conclusion}。",
-            "该值是低成本因果更新的经济上界/代理值。只有当新增预报、通信与调整系统的全年总成本低于该值时，才建议增加相应时点。",
+            f"该值是低成本因果更新的经济上界/代理值。{decision}",
         ]
     path = ROOT / "问题2至4_求解说明.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

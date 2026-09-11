@@ -16,13 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
@@ -41,7 +41,6 @@ SKILL_ROOT = Path(r"C:\Users\Sunuo\.agents\skills\math-modeling")
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SKILL_ROOT / "tools" / "figure" / "scripts"))
 from utils.plot_style import PALETTE, apply_publication_style, audit_design, audit_layout  # noqa: E402
-from export_figure import export_figure  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -95,11 +94,28 @@ def read_input(path: Path) -> pd.DataFrame:
     df = raw.copy()
     df[expected[1:]] = numeric
     df.insert(0, "时段序号", np.arange(1, 145, dtype=int))
+    df.insert(1, "时段起始分钟", [_time_start_minutes(value) for value in raw["时间"]])
+    expected_minutes = list(range(10, 1450, 10))
+    if df["时段起始分钟"].tolist() != expected_minutes:
+        raise ValueError("附件1时间必须依次表示 00:10-00:20 至次日 00:00-00:10")
     # 功率乘时长得到时段电量；不能直接把 kW 当 kWh，否则结果会被放大 6 倍。
     df["负荷电量_kWh"] = df["小区负载"] * (1.0 / 6.0)
     df["光伏电量_kWh"] = df["光伏发电预测功率"] * (1.0 / 6.0)
     df["净负荷_kWh"] = df["负荷电量_kWh"] - df["光伏电量_kWh"]
     return df
+
+
+def _time_start_minutes(value) -> int:
+    """把附件中的时段起点转成相对当日 0:00 的分钟数；0:00+1 为 1440。"""
+    text = str(value).strip()
+    if "+1" in text:
+        return 1440
+    if hasattr(value, "hour") and hasattr(value, "minute"):
+        return int(value.hour) * 60 + int(value.minute)
+    match = re.search(r"(\d{1,2}):(\d{2})", text)
+    if not match:
+        raise ValueError(f"无法识别时间标签：{value}")
+    return int(match.group(1)) * 60 + int(match.group(2))
 
 
 def _indices(n: int) -> dict[str, slice]:
@@ -288,8 +304,8 @@ def validate_solution(schedule: pd.DataFrame, summary: dict, params: Parameters)
 
 
 def interval_label(index: int) -> str:
-    """按官方模板的区间起点口径生成第 index 个 10 分钟标签。"""
-    start = index * 10
+    """按附件行号生成区间；第 0 行是 0:10-0:20，而不是 0:00-0:10。"""
+    start = (index + 1) * 10
     end = start + 10
     def fmt(minutes: int) -> str:
         day = minutes // 1440
@@ -316,14 +332,17 @@ def write_outputs(solution: SolveOutput, params: Parameters) -> None:
 
     storage_sheet = workbook["充放电量"]
     for block in range(6):
-        rows = schedule.iloc[block * 24:(block + 1) * 24]
+        clock_minutes = schedule["时段起始分钟"] % 1440
+        rows = schedule[(clock_minutes >= block * 240) & (clock_minutes < (block + 1) * 240)]
         storage_sheet.cell(block + 2, 2, round(float(rows["充电量_kWh"].sum()), 6))
         storage_sheet.cell(block + 2, 3, round(float(rows["放电量_kWh"].sum()), 6))
     storage_sheet["E2"] = params.soc_initial_kwh
     storage_sheet["E3"] = round(float(schedule["期末储电量_kWh"].iloc[-1]), 6)
     workbook.save(RESULTS_DIR / "result1.xlsx")
 
-    selected = [60, 72, 84, 96, 108, 120]  # 10:00、12:00、14:00、16:00、18:00、20:00 的区间起点。
+    target_minutes = [10 * 60, 12 * 60, 14 * 60, 16 * 60, 18 * 60, 20 * 60]
+    minute_to_index = {int(value): i for i, value in enumerate(schedule["时段起始分钟"])}
+    selected = [minute_to_index[value] for value in target_minutes]
     table1 = pd.DataFrame({
         "时间段": [interval_label(i) for i in selected],
         "购电量_kWh": [float(schedule.iloc[i]["购电量_kWh"]) for i in selected],
@@ -332,7 +351,8 @@ def write_outputs(solution: SolveOutput, params: Parameters) -> None:
 
     blocks = []
     for block in range(6):
-        rows = schedule.iloc[block * 24:(block + 1) * 24]
+        clock_minutes = schedule["时段起始分钟"] % 1440
+        rows = schedule[(clock_minutes >= block * 240) & (clock_minutes < (block + 1) * 240)]
         blocks.append({
             "时间段": f"{4 * block}:00-{4 * (block + 1)}:00",
             "充电量_kWh": float(rows["充电量_kWh"].sum()),
@@ -349,6 +369,9 @@ def add_caption(fig, text: str) -> None:
 
 
 def export_checked(fig, name: str, size: tuple[float, float] = (7.2, 4.8)) -> None:
+    import matplotlib.pyplot as plt
+    from export_figure import export_figure
+
     layout_issues = audit_layout(fig)
     design_issues = audit_design(fig)
     if layout_issues or design_issues:
@@ -367,12 +390,15 @@ def export_checked(fig, name: str, size: tuple[float, float] = (7.2, 4.8)) -> No
 
 def make_figures(solution: SolveOutput, sensitivity: pd.DataFrame) -> None:
     """生成 raw/process/result 三类各 3 张图，共 9 张逻辑图。"""
+    import matplotlib.pyplot as plt
+
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     apply_publication_style(language="zh", width="double")
     # 本项目需要在图下放结论文字，统一改由 tight_layout 预留底部区域。
     plt.rcParams["figure.constrained_layout.use"] = False
     d = solution.schedule
-    x = np.arange(144) / 6.0
+    # 附件标签是区间起点：首点位于 0:10，末点位于次日 0:00。
+    x = d["时段起始分钟"].to_numpy(float) / 60.0
     s = solution.summary
 
     # raw-1：时间序列支持“价格峰谷与净负荷不同步”的调度动机。

@@ -30,8 +30,8 @@
     "问题3_固定价": {
       "最大供需平衡残差_kWh": 2.2737367544323206e-13,
       "最大SOC递推残差_kWh": 9.094947017729282e-13,
-      "最小SOC_kWh": 1199.9999999999982,
-      "最大SOC_kWh": 10800.000000000002,
+      "最小SOC_kWh": 1199.9999999999977,
+      "最大SOC_kWh": 10800.000000000004,
       "同时充放电时段数": 0,
       "最大成本对账误差_元": 0.0,
       "日期数": 365
@@ -48,7 +48,7 @@
     "问题4-3_波动价": {
       "最大供需平衡残差_kWh": 2.2737367544323206e-13,
       "最大SOC递推残差_kWh": 9.094947017729282e-13,
-      "最小SOC_kWh": 1199.9999999999986,
+      "最小SOC_kWh": 1199.999999999998,
       "最大SOC_kWh": 10800.000000000004,
       "同时充放电时段数": 0,
       "最大成本对账误差_元": 0.0,
@@ -57,26 +57,26 @@
     "问题3_固定价_八时点代理": {
       "最大供需平衡残差_kWh": 2.2737367544323206e-13,
       "最大SOC递推残差_kWh": 9.094947017729282e-13,
-      "最小SOC_kWh": 1199.9999999999982,
+      "最小SOC_kWh": 1199.9999999999977,
       "最大SOC_kWh": 10800.000000000002,
       "同时充放电时段数": 0,
       "最大成本对账误差_元": 0.0,
       "日期数": 365
     }
   },
-  "voi_yuan": 278767.190463569,
-  "elapsed_seconds": 49.19278959999974,
+  "voi_yuan": -68822.9554733932,
+  "elapsed_seconds": 57.04556770000272,
   "result_workbooks": [
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\results\\result2.xlsx",
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\results\\result3.xlsx",
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\results\\result4-2.xlsx",
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\results\\result4-3.xlsx"
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\results\\result2.xlsx",
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\results\\result3.xlsx",
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\results\\result4-2.xlsx",
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\results\\result4-3.xlsx"
   ],
   "figures": [
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\figures\\result_q234_total_cost.png",
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\figures\\result_q234_monthly_cost.png",
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\figures\\result_q234_emergency_energy.png",
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\figures\\process_q43_typical_day.png",
-    "C:\\Users\\Sunuo\\Desktop\\26数模C\\figures\\result_q3_information_value.png"
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\figures\\result_q234_total_cost.png",
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\figures\\result_q234_monthly_cost.png",
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\figures\\result_q234_emergency_energy.png",
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\figures\\process_q43_typical_day.png",
+    "C:\\Users\\Sunuo\\Desktop\\26-C-master\\figures\\result_q3_information_value.png"
   ]
 }
